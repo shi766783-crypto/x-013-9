@@ -100,5 +100,14 @@ export function createDemoState() {
       { id: 'activity-2', petId: 'pet-nori', date: '2026-09-13', duration: 50, type: '奔跑', location: '社区草坪', notes: '' },
       { id: 'activity-3', petId: 'pet-momo', date: '2026-09-14', duration: 20, type: '玩耍', location: '家中', notes: '' },
     ],
+    trash: [],
   }
+}
+
+export const collectionMeta = {
+  healthRecords: { label: '健康指标', undoText: '健康记录' },
+  vaccines: { label: '疫苗与驱虫', undoText: '疫苗记录' },
+  medications: { label: '用药计划', undoText: '用药记录' },
+  feedings: { label: '喂食计划', undoText: '喂食记录' },
+  activities: { label: '活动记录', undoText: '活动记录' },
 }

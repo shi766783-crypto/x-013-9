@@ -1,9 +1,19 @@
 import { computed, reactive, watch } from 'vue'
-import { achievementDefinitions, createDemoState, daysFromToday, isThisWeek, normalRanges, todayISO, uid } from '../data'
+import { achievementDefinitions, collectionMeta, createDemoState, daysFromToday, isThisWeek, normalRanges, todayISO, uid } from '../data'
 
 const STORAGE_KEY = 'petcare-home-state'
+const TRASH_TTL_DAYS = 30
 const saved = localStorage.getItem(STORAGE_KEY)
 const state = reactive(saved ? JSON.parse(saved) : createDemoState())
+if (!Array.isArray(state.trash)) state.trash = []
+
+// 清理回收站中超过 30 天的记录，永久删除
+function purgeExpiredTrash() {
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - TRASH_TTL_DAYS)
+  state.trash = state.trash.filter((item) => new Date(item.deletedAt) > cutoff)
+}
+purgeExpiredTrash()
 
 watch(state, (value) => localStorage.setItem(STORAGE_KEY, JSON.stringify(value)), { deep: true })
 
@@ -32,10 +42,52 @@ export function usePetStore() {
   function addPet(payload) {
     add('pets', payload)
   }
+
+  // 编辑已有记录（就地替换，id 保持不变）
+  function update(itemType, id, payload) {
+    const list = state[itemType]
+    const index = list.findIndex((item) => item.id === id)
+    if (index === -1) return
+    list.splice(index, 1, { ...list[index], ...payload, id: list[index].id })
+  }
+
+  // 软删除：记录移入回收站，30 天内可恢复
+  function remove(itemType, id) {
+    const list = state[itemType]
+    const index = list.findIndex((item) => item.id === id)
+    if (index === -1) return null
+    const [record] = list.splice(index, 1)
+    const entry = { id: uid('trash'), collection: itemType, record, deletedAt: new Date().toISOString() }
+    state.trash.unshift(entry)
+    return entry.id
+  }
+
+  // 从回收站恢复
+  function restore(trashId) {
+    const index = state.trash.findIndex((item) => item.id === trashId)
+    if (index === -1) return false
+    const [entry] = state.trash.splice(index, 1)
+    if (!state[entry.collection]?.some((item) => item.id === entry.record.id)) {
+      state[entry.collection].unshift(entry.record)
+    }
+    return true
+  }
+
+  // 彻底删除单条回收站记录
+  function destroy(trashId) {
+    const index = state.trash.findIndex((item) => item.id === trashId)
+    if (index !== -1) state.trash.splice(index, 1)
+  }
+
+  // 清空回收站
+  function emptyTrash() {
+    state.trash.splice(0, state.trash.length)
+  }
+
   function resetDemo() {
     const fresh = createDemoState()
     Object.keys(state).forEach((key) => { state[key].splice(0, state[key].length, ...(fresh[key] || [])) })
   }
 
-  return { state, petById, petName, totalActivity, pendingVaccines, feedingTasks, medicationsToday, achievements, healthCompleteness, weightCompliance, add, addPet, resetDemo }
+  return { state, petById, petName, totalActivity, pendingVaccines, feedingTasks, medicationsToday, achievements, healthCompleteness, weightCompliance, add, addPet, update, remove, restore, destroy, emptyTrash, resetDemo, collectionMeta }
 }
