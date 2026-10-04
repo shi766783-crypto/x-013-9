@@ -29,6 +29,24 @@ export function usePetStore() {
   function add(itemType, payload) {
     state[itemType].unshift({ id: uid(itemType.slice(0, -1)), ...payload })
   }
+  function update(itemType, id, payload) {
+    const target = state[itemType].find((item) => item.id === id)
+    if (target) Object.assign(target, payload)
+  }
+  // 删除前保存快照，返回快照供调用方做撤销提示
+  function remove(itemType, id) {
+    const index = state[itemType].findIndex((item) => item.id === id)
+    if (index === -1) return null
+    const [item] = state[itemType].splice(index, 1)
+    return { itemType, id, item, index }
+  }
+  // 把误删的记录按原位置插回去
+  function restore(snapshot) {
+    if (!snapshot) return
+    const list = state[snapshot.itemType]
+    if (!list || list.some((item) => item.id === snapshot.id)) return
+    list.splice(Math.min(snapshot.index, list.length), 0, snapshot.item)
+  }
   function addPet(payload) {
     add('pets', payload)
   }
@@ -37,5 +55,5 @@ export function usePetStore() {
     Object.keys(state).forEach((key) => { state[key].splice(0, state[key].length, ...(fresh[key] || [])) })
   }
 
-  return { state, petById, petName, totalActivity, pendingVaccines, feedingTasks, medicationsToday, achievements, healthCompleteness, weightCompliance, add, addPet, resetDemo }
+  return { state, petById, petName, totalActivity, pendingVaccines, feedingTasks, medicationsToday, achievements, healthCompleteness, weightCompliance, add, update, remove, restore, addPet, resetDemo }
 }

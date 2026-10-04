@@ -1,16 +1,21 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Activity, Award, Bell, BookOpen, CalendarDays, ChartNoAxesCombined, Check, ChevronRight, CircleHelp, HeartPulse, LayoutDashboard, Menu, PawPrint, Pill, Plus, Settings, ShieldCheck, Sparkles, Utensils, X } from 'lucide-vue-next'
+import { Activity, Award, Bell, BookOpen, CalendarDays, ChartNoAxesCombined, Check, ChevronRight, CircleHelp, HeartPulse, LayoutDashboard, Menu, PawPrint, Pencil, Pill, Plus, Settings, ShieldCheck, Sparkles, Trash2, Undo2, Utensils, X } from 'lucide-vue-next'
 import PetModal from './components/PetModal.vue'
 import RecordModal from './components/RecordModal.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import TrendChart from './components/TrendChart.vue'
 import { calculateAge, daysFromToday, formatDate, normalRanges, todayISO } from './data'
 import { usePetStore } from './composables/usePetStore'
 
-const { state, petById, petName, totalActivity, pendingVaccines, feedingTasks, medicationsToday, achievements, healthCompleteness, weightCompliance, add, addPet } = usePetStore()
+const { state, petById, petName, totalActivity, pendingVaccines, feedingTasks, medicationsToday, achievements, healthCompleteness, weightCompliance, add, update, remove, restore, addPet } = usePetStore()
 const activeNav = ref('overview')
 const showPetModal = ref(false)
 const recordType = ref('')
+const editingRecord = ref(null)
+const deleteTarget = ref(null)
+const undoState = ref(null)
+let undoTimer = null
 const selectedPetId = ref('pet-momo')
 const selectedMetric = ref('weight')
 const mobileMenu = ref(false)
@@ -21,6 +26,14 @@ const navItems = [
   { id: 'activity', label: '活动记录', icon: Activity },
   { id: 'achievements', label: '成就徽章', icon: Award },
 ]
+// 各记录集合与弹窗类型、名称、摘要描述的映射，供编辑/删除复用
+const collectionMeta = {
+  healthRecords: { type: 'health', label: '健康指标', summary: (item) => `${metricLabel(item.type)} ${item.value} ${normalRanges[item.type].unit}` },
+  vaccines: { type: 'vaccine', label: '疫苗/驱虫', summary: (item) => `${item.category || '疫苗'} · ${item.name}` },
+  medications: { type: 'medication', label: '用药计划', summary: (item) => `${item.name} ${item.dose}` },
+  feedings: { type: 'feeding', label: '喂食计划', summary: (item) => `${item.food} · ${item.brand}` },
+  activities: { type: 'activity', label: '活动记录', summary: (item) => `${item.type} ${item.duration} 分钟` },
+}
 const currentPet = computed(() => petById(selectedPetId.value) || state.pets[0])
 const recentHealthRecords = computed(() => state.healthRecords.filter((item) => item.petId === selectedPetId.value && item.type === selectedMetric.value).sort((a, b) => a.date.localeCompare(b.date)).slice(-7))
 const healthStatus = computed(() => {
@@ -75,10 +88,49 @@ const averageWeightChange = computed(() => {
 })
 const leaderboard = computed(() => state.pets.map((pet) => ({ ...pet, completeness: healthCompleteness(pet.id), activity: state.activities.filter((item) => item.petId === pet.id).reduce((sum, item) => sum + Number(item.duration || 0), 0) })).sort((a, b) => b.completeness - a.completeness))
 
-function openRecord(type) { recordType.value = type }
-function saveRecord({ collection, payload }) { add(collection, payload); recordType.value = '' }
+function openRecord(type) { editingRecord.value = null; recordType.value = type }
+function editRecord(collection, item) { editingRecord.value = item; recordType.value = collectionMeta[collection].type }
+function saveRecord({ collection, id, payload }) {
+  if (id) {
+    update(collection, id, payload)
+  } else {
+    add(collection, payload)
+  }
+  recordType.value = ''
+  editingRecord.value = null
+}
+function askDelete(collection, item) {
+  deleteTarget.value = { collection, item }
+}
+function confirmDelete() {
+  const target = deleteTarget.value
+  if (!target) return
+  const snapshot = remove(target.collection, target.item.id)
+  deleteTarget.value = null
+  if (!snapshot) return
+  clearTimeout(undoTimer)
+  undoState.value = { snapshot, label: collectionMeta[target.collection].label }
+  undoTimer = setTimeout(() => { undoState.value = null }, 8000)
+}
+function undoDelete() {
+  if (undoState.value) restore(undoState.value.snapshot)
+  clearTimeout(undoTimer)
+  undoState.value = null
+}
 function metricLabel(type) { return normalRanges[type]?.label || type }
 function vaccineTone(days) { return days < 0 ? 'danger' : days <= 7 ? 'warning' : 'success' }
+function medicationTone(item) {
+  const today = todayISO()
+  if (item.endDate < today) return 'muted-badge'
+  if (item.startDate <= today && item.endDate >= today) return 'warning'
+  return 'success'
+}
+function medicationToneLabel(item) {
+  const today = todayISO()
+  if (item.endDate < today) return '已结束'
+  if (item.startDate <= today && item.endDate >= today) return '进行中'
+  return '未开始'
+}
 </script>
 
 <template>
@@ -102,14 +154,33 @@ function vaccineTone(days) { return days < 0 ? 'danger' : days <= 7 ? 'warning' 
           <article class="panel trend-panel"><div class="panel-heading"><div><span class="eyebrow">健康趋势</span><h3>{{ currentPet?.name }} 的{{ metricLabel(selectedMetric) }}变化</h3></div><div class="segmented"><button v-for="metric in ['weight', 'temperature', 'heartRate']" :key="metric" :class="{ active: selectedMetric === metric }" @click="selectedMetric = metric">{{ metricLabel(metric) }}</button></div></div><div class="trend-summary"><div><strong>{{ recentHealthRecords.at(-1)?.value || currentPet?.weight || '--' }} <small>{{ normalRanges[selectedMetric].unit }}</small></strong><span>最近记录 · {{ recentHealthRecords.at(-1)?.date ? formatDate(recentHealthRecords.at(-1).date) : '暂无' }}</span></div><span class="health-status" :class="healthStatus.className"><i></i>{{ healthStatus.label }}</span><span class="range-tag"><span></span>正常范围 {{ normalRanges[selectedMetric].min }} - {{ normalRanges[selectedMetric].max }} {{ normalRanges[selectedMetric].unit }}</span></div><TrendChart :records="recentHealthRecords" :type="selectedMetric" /><button class="full-btn" @click="openRecord('health')">记录健康指标 <Plus :size="15" /></button></article>
           <article class="panel quick-panel"><div class="panel-heading"><div><span class="eyebrow">快速记录</span><h3>把日常变成习惯</h3></div><Sparkles :size="18" class="heading-spark" /></div><div class="quick-actions"><button @click="openRecord('health')"><span class="quick-icon health"><HeartPulse :size="19" /></span><span><strong>健康指标</strong><small>体重、体温、心率</small></span><ChevronRight :size="16" /></button><button @click="openRecord('vaccine')"><span class="quick-icon vaccine"><ShieldCheck :size="19" /></span><span><strong>疫苗与驱虫</strong><small>守护免疫计划</small></span><ChevronRight :size="16" /></button><button @click="openRecord('activity')"><span class="quick-icon activity"><Activity :size="19" /></span><span><strong>活动记录</strong><small>记录每一次活力</small></span><ChevronRight :size="16" /></button><button @click="openRecord('feeding')"><span class="quick-icon feeding"><Utensils :size="19" /></span><span><strong>喂食计划</strong><small>安排每日饮食</small></span><ChevronRight :size="16" /></button></div></article>
         </section>
-        <section class="content-grid bottom-grid"><article class="panel vaccine-panel"><div class="panel-heading"><div><span class="eyebrow">免疫计划</span><h3>疫苗与驱虫</h3></div><button class="text-btn" @click="openRecord('vaccine')">添加 <Plus :size="15" /></button></div><div class="vaccine-list"><div v-for="item in upcomingVaccines.slice(0, 3)" :key="item.id" class="vaccine-item"><div class="vaccine-mark"><ShieldCheck :size="17" /></div><div><strong>{{ item.category || '疫苗' }} · {{ item.name }}</strong><span>{{ petName(item.petId) }} · {{ item.hospital || '未填写医院' }}</span></div><span class="date-badge" :class="vaccineTone(item.days)">{{ item.days < 0 ? '已逾期' : item.days === 0 ? '今天' : `${item.days} 天后` }}</span></div></div></article><article class="panel achievement-panel"><div class="panel-heading"><div><span class="eyebrow">成长足迹</span><h3>成就徽章 <small>{{ activeAchievements.length }}/12</small></h3></div><button class="text-btn" @click="activeNav = 'achievements'">全部 <ChevronRight :size="15" /></button></div><div class="badge-row"><div v-for="item in achievements.slice(0, 6)" :key="item.id" class="badge-item" :class="{ locked: !item.unlocked }"><div><Award v-if="item.unlocked" :size="21" /><span v-else>?</span></div><small>{{ item.title }}</small></div></div></article></section>
+        <section class="content-grid bottom-grid"><article class="panel vaccine-panel"><div class="panel-heading"><div><span class="eyebrow">免疫计划</span><h3>疫苗与驱虫</h3></div><button class="text-btn" @click="openRecord('vaccine')">添加 <Plus :size="15" /></button></div><div class="vaccine-list"><div v-for="item in upcomingVaccines.slice(0, 3)" :key="item.id" class="vaccine-item"><div class="vaccine-mark"><ShieldCheck :size="17" /></div><div><strong>{{ item.category || '疫苗' }} · {{ item.name }}</strong><span>{{ petName(item.petId) }} · {{ item.hospital || '未填写医院' }}</span></div><span class="date-badge" :class="vaccineTone(item.days)">{{ item.days < 0 ? '已逾期' : item.days === 0 ? '今天' : `${item.days} 天后` }}</span><div class="row-actions"><button class="icon-btn icon-xs" title="编辑" @click="editRecord('vaccines', item)"><Pencil :size="13" /></button><button class="icon-btn icon-xs danger" title="删除" @click="askDelete('vaccines', item)"><Trash2 :size="13" /></button></div></div></div></article><article class="panel achievement-panel"><div class="panel-heading"><div><span class="eyebrow">成长足迹</span><h3>成就徽章 <small>{{ activeAchievements.length }}/12</small></h3></div><button class="text-btn" @click="activeNav = 'achievements'">全部 <ChevronRight :size="15" /></button></div><div class="badge-row"><div v-for="item in achievements.slice(0, 6)" :key="item.id" class="badge-item" :class="{ locked: !item.unlocked }"><div><Award v-if="item.unlocked" :size="21" /><span v-else>?</span></div><small>{{ item.title }}</small></div></div></article></section>
       </div>
       <div v-else class="page placeholder-page">
         <section class="welcome-row"><div><p class="section-kicker">家庭健康空间</p><h2>{{ navItems.find((item) => item.id === activeNav)?.label }}</h2><p class="muted">所有记录都会自动保存在当前设备。</p></div><button class="btn btn-primary" @click="openRecord(activeNav === 'health' ? 'health' : activeNav === 'activity' ? 'activity' : 'vaccine')"><Plus :size="17" />添加记录</button></section>
-        <section class="content-grid"><article class="panel wide-panel"><div class="panel-heading"><div><span class="eyebrow">数据概览</span><h3>{{ activeNav === 'achievements' ? '我的成就' : activeNav === 'schedule' ? '全部日程' : activeNav === 'activity' ? '活动历史' : '健康档案' }}</h3></div></div><div v-if="activeNav === 'achievements'" class="all-badges"><div v-for="item in achievements" :key="item.id" class="achievement-row" :class="{ unlocked: item.unlocked }"><div class="badge-large"><Award v-if="item.unlocked" :size="22" /><span v-else>?</span></div><div><strong>{{ item.title }}</strong><span>{{ item.desc }}</span></div><b>{{ item.unlocked ? '已解锁' : '未解锁' }}</b></div></div><div v-else-if="activeNav === 'schedule'" class="agenda-list large-list"><div v-for="item in agenda" :key="item.id" class="agenda-item"><div class="agenda-time">{{ item.time }}</div><div class="agenda-icon" :class="item.kind"><component :is="item.icon" :size="17" /></div><div class="agenda-copy"><strong>{{ item.title }}</strong><span>{{ item.detail }}</span></div><button class="check-circle"><Check :size="14" /></button></div></div><div v-else-if="activeNav === 'activity'" class="table-list"><div v-for="item in state.activities" :key="item.id" class="table-row"><strong>{{ petName(item.petId) }}</strong><span>{{ formatDate(item.date, true) }}</span><span>{{ item.type }} · {{ item.duration }} 分钟</span><span>{{ item.location || '未填写地点' }}</span></div></div><div v-else class="table-list"><div v-for="item in state.healthRecords" :key="item.id" class="table-row"><strong>{{ petName(item.petId) }}</strong><span>{{ formatDate(item.date, true) }}</span><span>{{ metricLabel(item.type) }}</span><span>{{ item.value }} {{ normalRanges[item.type].unit }}</span></div></div></article><article class="panel leaderboard-panel"><div class="panel-heading"><div><span class="eyebrow">家庭榜单</span><h3>健康榜</h3></div><ChartNoAxesCombined :size="19" /></div><div v-for="(pet, index) in leaderboard" :key="pet.id" class="rank-row"><span class="rank-number">{{ String(index + 1).padStart(2, '0') }}</span><div class="mini-avatar">{{ pet.species === '狗' ? '🐕' : '🐈' }}</div><div><strong>{{ pet.name }}</strong><span>档案完整度 {{ pet.completeness }}%</span></div><b>{{ pet.completeness }}</b></div></article></section>
+        <section class="content-grid"><article class="panel wide-panel"><div class="panel-heading"><div><span class="eyebrow">数据概览</span><h3>{{ activeNav === 'achievements' ? '我的成就' : activeNav === 'schedule' ? '日程与计划' : activeNav === 'activity' ? '活动历史' : '健康档案' }}</h3></div><button v-if="activeNav !== 'achievements' && activeNav !== 'schedule'" class="text-btn" @click="openRecord(activeNav === 'activity' ? 'activity' : 'health')"><Plus :size="14" />添加</button></div><div v-if="activeNav === 'achievements'" class="all-badges"><div v-for="item in achievements" :key="item.id" class="achievement-row" :class="{ unlocked: item.unlocked }"><div class="badge-large"><Award v-if="item.unlocked" :size="22" /><span v-else>?</span></div><div><strong>{{ item.title }}</strong><span>{{ item.desc }}</span></div><b>{{ item.unlocked ? '已解锁' : '未解锁' }}</b></div></div><div v-else-if="activeNav === 'schedule'" class="manage-sections">
+          <section class="manage-block"><div class="manage-head"><strong>今日清单</strong></div><div class="agenda-list large-list"><div v-for="item in agenda" :key="item.id" class="agenda-item"><div class="agenda-time">{{ item.time }}</div><div class="agenda-icon" :class="item.kind"><component :is="item.icon" :size="17" /></div><div class="agenda-copy"><strong>{{ item.title }}</strong><span>{{ item.detail }}</span></div><button class="check-circle"><Check :size="14" /></button></div><div v-if="!agenda.length" class="empty-state">今天没有待办，享受轻松的一天吧。</div></div></section>
+          <section class="manage-block"><div class="manage-head"><strong>疫苗与驱虫</strong><button class="text-btn" @click="openRecord('vaccine')"><Plus :size="13" />添加</button></div><div v-if="state.vaccines.length" class="manage-list"><div v-for="item in upcomingVaccines" :key="item.id" class="manage-row"><div class="manage-icon vaccine"><ShieldCheck :size="15" /></div><div class="manage-copy"><strong>{{ item.category || '疫苗' }} · {{ item.name }}</strong><span>{{ petName(item.petId) }} · {{ formatDate(item.date) }} 接种 · {{ item.hospital || '未填写医院' }}</span></div><span class="date-badge" :class="vaccineTone(item.days)">{{ item.days < 0 ? '已逾期' : item.days === 0 ? '今天' : `${item.days} 天后` }}</span><div class="row-actions"><button class="icon-btn icon-xs" title="编辑" @click="editRecord('vaccines', item)"><Pencil :size="13" /></button><button class="icon-btn icon-xs danger" title="删除" @click="askDelete('vaccines', item)"><Trash2 :size="13" /></button></div></div></div><div v-else class="empty-state">还没有疫苗或驱虫计划。</div></section>
+          <section class="manage-block"><div class="manage-head"><strong>用药计划</strong><button class="text-btn" @click="openRecord('medication')"><Plus :size="13" />添加</button></div><div v-if="state.medications.length" class="manage-list"><div v-for="item in state.medications" :key="item.id" class="manage-row"><div class="manage-icon medication"><Pill :size="15" /></div><div class="manage-copy"><strong>{{ petName(item.petId) }} · {{ item.name }}</strong><span>{{ item.dose }} · {{ item.frequency }} · {{ formatDate(item.startDate) }} 至 {{ formatDate(item.endDate) }}</span></div><span class="date-badge" :class="medicationTone(item)">{{ medicationToneLabel(item) }}</span><div class="row-actions"><button class="icon-btn icon-xs" title="编辑" @click="editRecord('medications', item)"><Pencil :size="13" /></button><button class="icon-btn icon-xs danger" title="删除" @click="askDelete('medications', item)"><Trash2 :size="13" /></button></div></div></div><div v-else class="empty-state">还没有用药计划。</div></section>
+          <section class="manage-block"><div class="manage-head"><strong>喂食计划</strong><button class="text-btn" @click="openRecord('feeding')"><Plus :size="13" />添加</button></div><div v-if="state.feedings.length" class="manage-list"><div v-for="item in state.feedings" :key="item.id" class="manage-row"><div class="manage-icon feeding"><Utensils :size="15" /></div><div class="manage-copy"><strong>{{ petName(item.petId) }} · {{ item.brand }}</strong><span>{{ item.food }} · 每日 {{ item.times }} 餐 · {{ item.portion || '份量按需' }}</span></div><div class="row-actions"><button class="icon-btn icon-xs" title="编辑" @click="editRecord('feedings', item)"><Pencil :size="13" /></button><button class="icon-btn icon-xs danger" title="删除" @click="askDelete('feedings', item)"><Trash2 :size="13" /></button></div></div></div><div v-else class="empty-state">还没有喂食计划。</div></section>
+        </div><div v-else-if="activeNav === 'activity'" class="table-list table-manage"><div class="table-row table-head"><span>宠物</span><span>日期</span><span>活动</span><span>地点</span><span class="col-actions">操作</span></div><div v-for="item in state.activities" :key="item.id" class="table-row"><strong>{{ petName(item.petId) }}</strong><span>{{ formatDate(item.date, true) }}</span><span>{{ item.type }} · {{ item.duration }} 分钟</span><span>{{ item.location || '未填写地点' }}</span><span class="col-actions"><button class="icon-btn icon-xs" title="编辑" @click="editRecord('activities', item)"><Pencil :size="13" /></button><button class="icon-btn icon-xs danger" title="删除" @click="askDelete('activities', item)"><Trash2 :size="13" /></button></span></div><div v-if="!state.activities.length" class="empty-state">还没有活动记录。</div></div><div v-else class="table-list table-manage"><div class="table-row table-head"><span>宠物</span><span>日期</span><span>指标</span><span>数值</span><span class="col-actions">操作</span></div><div v-for="item in state.healthRecords" :key="item.id" class="table-row"><strong>{{ petName(item.petId) }}</strong><span>{{ formatDate(item.date, true) }}</span><span>{{ metricLabel(item.type) }}</span><span>{{ item.value }} {{ normalRanges[item.type].unit }}</span><span class="col-actions"><button class="icon-btn icon-xs" title="编辑" @click="editRecord('healthRecords', item)"><Pencil :size="13" /></button><button class="icon-btn icon-xs danger" title="删除" @click="askDelete('healthRecords', item)"><Trash2 :size="13" /></button></span></div><div v-if="!state.healthRecords.length" class="empty-state">还没有健康指标记录。</div></div></article><article class="panel leaderboard-panel"><div class="panel-heading"><div><span class="eyebrow">家庭榜单</span><h3>健康榜</h3></div><ChartNoAxesCombined :size="19" /></div><div v-for="(pet, index) in leaderboard" :key="pet.id" class="rank-row"><span class="rank-number">{{ String(index + 1).padStart(2, '0') }}</span><div class="mini-avatar">{{ pet.species === '狗' ? '🐕' : '🐈' }}</div><div><strong>{{ pet.name }}</strong><span>档案完整度 {{ pet.completeness }}%</span></div><b>{{ pet.completeness }}</b></div></article></section>
       </div>
     </main>
     <PetModal :visible="showPetModal" @close="showPetModal = false" @submit="(payload) => { addPet(payload); showPetModal = false }" />
-    <RecordModal :visible="!!recordType" :type="recordType || 'health'" :pets="state.pets" @close="recordType = ''" @submit="saveRecord" />
+    <RecordModal :visible="!!recordType" :type="recordType || 'health'" :pets="state.pets" :record="editingRecord" @close="recordType = ''; editingRecord = null" @submit="saveRecord" />
+    <ConfirmDialog
+      :visible="!!deleteTarget"
+      :description="deleteTarget ? `${petName(deleteTarget.item.petId)} · ${collectionMeta[deleteTarget.collection].summary(deleteTarget.item)}` : ''"
+      @close="deleteTarget = null"
+      @confirm="confirmDelete"
+    />
+    <Transition name="toast">
+      <div v-if="undoState" class="undo-toast">
+        <span class="undo-icon"><Trash2 :size="14" /></span>
+        <span class="undo-copy">已删除{{ undoState.label }}，这条记录可恢复。</span>
+        <button class="undo-btn" @click="undoDelete"><Undo2 :size="14" />撤销</button>
+        <button class="icon-btn icon-xs" @click="undoState = null"><X :size="14" /></button>
+      </div>
+    </Transition>
   </div>
 </template>

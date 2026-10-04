@@ -3,9 +3,16 @@ import { computed, ref, watch } from 'vue'
 import { X } from 'lucide-vue-next'
 import { activityTypes, normalRanges, todayISO } from '../data'
 
-const props = defineProps({ visible: Boolean, type: { type: String, default: 'health' }, pets: { type: Array, default: () => [] } })
+const props = defineProps({
+  visible: Boolean,
+  type: { type: String, default: 'health' },
+  pets: { type: Array, default: () => [] },
+  record: { type: Object, default: null },
+})
 const emit = defineEmits(['close', 'submit'])
-const title = computed(() => ({ health: '记录健康指标', vaccine: '添加疫苗计划', medication: '添加用药计划', feeding: '设置喂食计划', activity: '记录一次活动' }[props.type]))
+const addTitles = { health: '记录健康指标', vaccine: '添加疫苗计划', medication: '添加用药计划', feeding: '设置喂食计划', activity: '记录一次活动' }
+const editTitles = { health: '编辑健康指标', vaccine: '编辑疫苗计划', medication: '编辑用药计划', feeding: '编辑喂食计划', activity: '编辑活动记录' }
+const title = computed(() => (props.record ? editTitles[props.type] : addTitles[props.type]))
 const form = ref({})
 const defaults = {
   health: () => ({ petId: props.pets[0]?.id || '', type: 'weight', date: todayISO(), value: '' }),
@@ -14,23 +21,31 @@ const defaults = {
   feeding: () => ({ petId: props.pets[0]?.id || '', food: '主粮', brand: '', times: 2, portion: '' }),
   activity: () => ({ petId: props.pets[0]?.id || '', date: todayISO(), duration: '', type: '散步', location: '', notes: '' }),
 }
-function reset() { form.value = defaults[props.type]() }
+function reset() {
+  const base = defaults[props.type]()
+  // 编辑时只取表单定义的字段，避免把列表派生字段（如 days）写回数据
+  form.value = props.record
+    ? Object.fromEntries(Object.keys(base).map((key) => [key, props.record[key] ?? base[key]]))
+    : base
+}
 function submit() {
   const payload = { ...form.value }
-  if (props.type === 'health') { payload.value = Number(payload.value); payload.type = payload.type }
+  if (props.type === 'health') payload.value = Number(payload.value)
   if (props.type === 'activity') payload.duration = Number(payload.duration)
-  emit('submit', { collection: { health: 'healthRecords', vaccine: 'vaccines', medication: 'medications', feeding: 'feedings', activity: 'activities' }[props.type], payload })
+  if (props.type === 'feeding') payload.times = Number(payload.times)
+  const collection = { health: 'healthRecords', vaccine: 'vaccines', medication: 'medications', feeding: 'feedings', activity: 'activities' }[props.type]
+  emit('submit', { collection, id: props.record?.id || null, payload })
   reset()
 }
 reset()
-watch(() => props.type, reset)
+watch(() => [props.visible, props.record, props.type], reset)
 watch(() => props.pets.length, reset)
 </script>
 
 <template>
   <div v-if="visible" class="modal-backdrop" @click.self="emit('close')">
     <section class="modal compact-modal">
-      <header class="modal-header"><div><span class="eyebrow">添加记录</span><h2>{{ title }}</h2></div><button class="icon-btn" @click="emit('close')"><X :size="18" /></button></header>
+      <header class="modal-header"><div><span class="eyebrow">{{ record ? '编辑记录' : '添加记录' }}</span><h2>{{ title }}</h2></div><button class="icon-btn" @click="emit('close')"><X :size="18" /></button></header>
       <form class="form-grid single-column" @submit.prevent="submit">
         <label>关联宠物<select v-model="form.petId"><option v-for="pet in pets" :key="pet.id" :value="pet.id">{{ pet.name }}</option></select></label>
         <template v-if="type === 'health'">
@@ -49,7 +64,7 @@ watch(() => props.pets.length, reset)
         <template v-else>
           <div class="two-fields"><label>活动日期<input v-model="form.date" type="date" required /></label><label>活动时长（分钟）<input v-model="form.duration" type="number" min="1" required /></label></div><label>活动类型<select v-model="form.type"><option v-for="item in activityTypes" :key="item">{{ item }}</option></select></label><label>地点<input v-model="form.location" placeholder="例如：江滨公园" /></label><label>备注<textarea v-model="form.notes" rows="2"></textarea></label>
         </template>
-        <footer class="modal-actions"><button type="button" class="btn btn-quiet" @click="emit('close')">取消</button><button class="btn btn-primary" type="submit">保存记录</button></footer>
+        <footer class="modal-actions"><button type="button" class="btn btn-quiet" @click="emit('close')">取消</button><button class="btn btn-primary" type="submit">{{ record ? '保存修改' : '保存记录' }}</button></footer>
       </form>
     </section>
   </div>
